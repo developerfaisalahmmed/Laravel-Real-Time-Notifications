@@ -1,0 +1,265 @@
+Laravel Real-Time Notifications
+#laravel #javascript
+
+In this post, we will take a look at how we can send real-time notifications with Laravel, the Laravel Websockets package, and Laravel Echo.
+Article banner showing a notification on a website
+
+HTTP is stateless. Usually, the client asks for a URL, and the server returns the data. Only a refresh of the page can load new information. Most of the time, this is enough, but sometimes we need more.
+
+Today, many tasks happen on the backend, and we sometimes need to inform the user about it right away. So there is a use-case for triggering an action from the server instead of the client. Think of messaging in a chat or notification messages that pop up on the top of your dashboard.
+
+To achieve this, our client could ask the server every second if something new happened, or you could make use of long polling. But the best solution is to create a new communication channel through WebSockets which works in both ways.
+
+Today we are going to build an application with real-time messaging. We will use a WebSocket solution called Laravel Websockets, built in PHP.
+
+Here is a preview of what we are going to built today:
+Gif showing real-time notifications popping in
+
+If you're just interested in the code, check it out here.
+Installation
+
+We start by creating a new Laravel 8 application. I always recommend using the Laravel Installer for this purpose.
+
+laravel new laravel-real-time-notifications
+
+To achieve our goal of sending real-time notifications, we need to make three parts work together:
+
+    Sending/broadcasting notifications from our Laravel application
+    A WebSockets server that receives those notifications
+    Our front-end that listens to the WebSockets server
+
+Let's start with the WebSockets server.
+Installing Laravel Websockets
+
+Require the Laravel Websockets package. It works as a replacement for external services like Pusher. Many settings will refer to Pusher today but be reminded that we are not using it. We want our own solution.
+
+composer require beyondcode/laravel-websockets
+
+We also need a package by Pusher.
+
+composer require pusher/pusher-php-server
+
+Next, adapt your .env file. We want the BROADCAST_DRIVER to be pusher.
+
+BROADCAST_DRIVER=pusher
+
+Note: Again I want to mention that we do not use the Pusher service. Our websockets server just has the same API.
+
+And we need to set the Pusher credentials.
+
+PUSHER_APP_ID=12345
+PUSHER_APP_KEY=12345
+PUSHER_APP_SECRET=12345
+PUSHER_APP_CLUSTER=mt1
+
+We can define all those values ourselves. We are not actually using Pusher, but the package uses these keys, so it makes replacing Pusher (if you use it) as simple as possible.
+Note: Make sure to use more random values when using in production.
+
+The Laravel Websockets package comes with a migration file for storing statistics and a config file we need to adapt. Let's publish them.
+
+php artisan vendor:publish --provider="BeyondCode\LaravelWebSockets\WebSocketsServiceProvider" --tag="migrations"
+
+This will create a new migration file that we can run. Make sure you have set up a database for this project and defined the DB credentials in the .env file. Afterward, we can run the migration.
+
+php artisan migrate
+
+And here, we publish the config file of Laravel Websockets.
+
+php artisan vendor:publish --provider="BeyondCode\LaravelWebSockets\WebSocketsServiceProvider" --tag="config"
+
+Now we are ready to start the WebSockets server.
+
+php artisan websockets:serve
+
+To test that it is running, we can check the debugging dashboard under the endpoint /laravel-websockets. You can click connect to see if the dashboard can connect to the WebSockets server.
+Laravel Websockets Debug Dashboard
+
+After clicking connect, you should see that the dashboard is subscribed to some debugging channels like private-websockets-dashboard-api-message. This will tell you that the server is set up correctly.
+Broadcast Notifications From Our Laravel Application
+
+There are two ways we can send messages from our backend to the WebSockets server:
+
+    Laravel Events
+    Laravel Notifications
+
+We will start with events because this is a little easier. Later we will check notifications as well.
+
+Let's create a new event with artisan.
+
+php artisan make:event RealTimeMessage
+
+Here is what we need to change:
+
+    use the ShouldBroadcast interface
+    add a message property which we will pass through the constructor
+    return a new Channel instead of a PrivateChannel
+    give the channel the name events instead of channel-name
+
+<?php
+
+namespace App\Events;
+
+use Illuminate\Broadcasting\Channel;
+use Illuminate\Contracts\Broadcasting\ShouldBroadcast;
+use Illuminate\Queue\SerializesModels;
+
+class RealTimeMessage implements ShouldBroadcast
+{
+    use SerializesModels;
+
+    public string $message;
+
+    public function __construct(string $message)
+    {
+        $this->message = $message;
+    }
+
+    public function broadcastOn(): Channel
+    {
+        return new Channel('events');
+    }
+}
+
+Note: You may noticed that we didn't define a listener like we usually do with an event. This is because we are using the websockets server.
+
+Before we can try sending this event, please adapt your broadcasting.php config file to use the following options:
+
+'options' => [
+    'cluster' => env('PUSHER_APP_CLUSTER'),
+    'encrypted' => false,
+    'host' => '127.0.0.1',
+    'port' => 6001,
+    'scheme' => 'http'
+],
+
+With these options, we make sure that when we broadcast something from our Laravel application, it gets sent to our WebSockets server.
+Note: We do not use TLS for our demo, but we will take a look at that later as well.
+
+Now we can trigger our created event RealTimeMessage with the global event helper. I recommend using tinker or Tinkerwell to do that for our demo, but you could also create a route and run the command there.
+
+event(new App\Events\RealTimeMessage('Hello World'));
+
+Of course, in a real application, you would run this inside a controller or action class. After running this command, you should see a new entry on the debug dashboard.
+Debug Dashboard showing sent event
+Listen To Messages From Our Front-end
+
+We have made sure that our sent event is broadcasted to the WebSockets server. But now we want to listen to it so that we can use the message on our front-end. We are going to use the JavaScript library Laravel Echo for that purpose.
+
+Let's start by installing it together with the pusher library, which we will need as well.
+
+npm install --save-dev laravel-echo pusher-js
+
+The resouces/js/bootstrap.js file of Laravel already contains a code snippet for creating a new instance of Laravel Echo we can use. Comment it in and add the wsHost and wsPort.
+
+import Echo from 'laravel-echo';
+
+window.Pusher = require('pusher-js');
+
+window.Echo = new Echo({
+    broadcaster: 'pusher',
+    key: process.env.MIX_PUSHER_APP_KEY,
+    cluster: process.env.MIX_PUSHER_APP_CLUSTER,
+    forceTLS: false,
+    wsHost: window.location.hostname,
+    wsPort: 6001,
+});
+
+The bootstrap.js file is required by Laravel's main resources/js/app.js file. This means we need to run npm run dev to bundle our Echo code with the main JS file.
+
+Now import the script. We are going to use Laravel's welcome view for our tutorial. So add the app.js file into your view, right before the end of the body tag.
+
+<script src="{{ asset('js/app.js') }}"></script>
+
+Also, open a new script tag where we create our Echo listener. We listen to the channel events and for the class name of the event we created. If we receive an update, we write a message to the console.
+
+<script>
+    Echo.channel('events')
+        .listen('RealTimeMessage', (e) => console.log('RealTimeMessage: ' + e.message));
+</script>
+
+When you refresh the browser's welcome page, you should also get an update on the debug dashboard.
+Debug Dashboard showing subscribed channel
+
+It shows that we are successfully subscribed to the events channel. This means we are ready to give it a real try!
+Sending Real-Time Messages
+
+Now that we prepared our event, the WebSockets server, and our JavaScript listener, we can give a real try. So back inside tinker or Tinkerwell, we can trigger our event again.
+
+event(new App\Events\RealTimeMessage('Hello World'));
+
+Now we not only see the message in the debug dashboard but also in the console output. So we were able to receive data on our front-end, without refreshing the page or making an ajax call. This is our first real-time message. 🥳
+Real time message shown in console output
+Let's Talk Privately
+
+Next to sending messages to a public channel, we can also use a private one with events. Let's change our RealTimeMessage event to use a private channel.
+
+public function broadcastOn(): Channel
+{
+    return new PrivateChannel('events');
+}
+
+Now send the event again.
+Note: If you are using Laravel Tinker, make sure to restart it because of the changes we made in our event.
+Debug Dashboard showing the message on the private channel
+
+As you can see in the debug dashboard, our message was now sent on a private channel. Nice! But now we also need to listen to a private channel. Luckily, Laravel Echo lets us also change the channel method to private.
+
+Echo.private('events')
+    .listen('RealTimeMessage', (e) => console.log('Private RealTimeMessage: ' + e.message));
+
+But when you refresh the welcome page, you see that we get an error.
+Private channel error on our welcome page
+
+The problem here is that private channels need to be authenticated. That's what Laravel Echo is trying to do by requesting the /broadcasting/auth endpoint. But the endpoint is not defined. We need to include it by uncommenting the BroadcastServericeProvider in our app.php config file.
+
+/*
+ * Application Service Providers...
+ */
+App\Providers\AppServiceProvider::class,
+App\Providers\AuthServiceProvider::class,
+App\Providers\BroadcastServiceProvider::class, // We enabled this class
+App\Providers\EventServiceProvider::class,
+App\Providers\RouteServiceProvider::class,
+
+Refresh the page again, and you will see the error from before is gone, but of course, there is a new one :-)
+419 error in console log
+
+The endpoint is now defined, but it returns a 419 error. This one is about the csrf token. We need it to verify this request. Here we don't have a form where we usually use it, but we can add it to our HTML head in a meta tag.
+
+<meta name="csrf-token" content="{{ csrf_token() }}">
+
+Again we were able to solve a problem, and also we see a new error. But trust me, we are getting close now :-)
+403 broadcast auth error
+
+This time we received a 403 error telling us we are not allowed to listen to the private channel. This is good because we haven't told Laravel yet who is allowed to listen to this private channel.
+
+Next to the broadcast routes, the BroadcastServiceProvider also activates the routes/channels.php file. Here is where we define who is allowed to access a private channel. There is already an example, but we add our own channel check now.
+
+Broadcast::channel('events', function ($user) {
+    return true;
+});
+
+We tell Laravel that we do not have specific rules for authenticating who can subscribe to our private channel. But when you refresh the welcome page, you will still see a 403 error. This is because one thing is the same for every private channel: There must be a logged-in user.
+
+So let's add a new user to the database. I'm using Tinkerwell again here. We do not care about the user details.
+
+User::create([
+    'name' => 'Test user',
+    'email' => 'test@test.at',
+    'password' => bcrypt('test'),
+]);
+
+We can log this user into our application before we return the welcome view in the web.php route file. Also, make sure to import the User class before you use it.
+
+Route::get('/', function () {
+    auth()->login(User::first());
+
+    return view('welcome');
+});
+
+This will log in the first user from our users table. Reload the welcome page, and you will no longer find an error in the console. You will also see that we are now subscribed to the private events channel in the debug dashboard.
+Debug Dashboard subscribed to private events channel
+
+Trigger the event once again, and we will receive the private message output in the console.
+
+event(new App\Events\RealTimeMessage('Hello World'));
